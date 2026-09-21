@@ -9,10 +9,13 @@ import {
   OFF_ROUTE_M,
   REROUTE_COOLDOWN_MS,
 } from "../lib/config";
+import { angleDelta } from "../lib/motion";
 import {
   buildRouteIndex,
   isOffRoute,
   locateOnRoute,
+  remainingStops,
+  routeBearingAt,
   type RouteIndex,
   type RouteProgress,
 } from "../lib/navigation";
@@ -39,6 +42,13 @@ export type Navigation = {
   /** The route being followed, or the one highlighted in preview. */
   route: Route | null;
   progress: RouteProgress | null;
+  /**
+   * Which way the route runs where the rider is, in degrees from north.
+   *
+   * Far steadier than any sensor, so the driving camera turns with this
+   * whenever the rider is on the line.
+   */
+  routeBearing: number | null;
   status: NavStatus;
   error: string | null;
   /** How many times the route has been rebuilt since the journey began. */
@@ -61,6 +71,9 @@ export type Navigation = {
 
 type Announced = { far: boolean; near: boolean };
 
+/** Below this speed the GPS course is too noisy to judge direction by. */
+const COURSE_TRUST_SPEED_MS = 3;
+
 /**
  * Turn-by-turn navigation on top of the live GPS feed.
  *
@@ -82,6 +95,7 @@ export function useNavigation(fix: Fix | null): Navigation {
   const [routes, setRoutes] = useState<Route[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [progress, setProgress] = useState<RouteProgress | null>(null);
+  const [routeBearing, setRouteBearing] = useState<number | null>(null);
   const [status, setStatus] = useState<NavStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [rerouteCount, setRerouteCount] = useState(0);
@@ -146,9 +160,33 @@ export function useNavigation(fix: Fix | null): Navigation {
       setError(null);
       lastRerouteRef.current = Date.now();
 
+      // Only a rolling bike has a direction worth routing from; standing
+      // still, the rider may well want to turn round.
+      const moving = fixRef.current;
+      const heading =
+        isReroute && moving?.heading != null && (moving.speed ?? 0) >= COURSE_TRUST_SPEED_MS
+          ? moving.heading
+          : null;
+
       const waypoints: LngLat[] = [from, ...next.map((s) => s.lngLat)];
-      const result = await fetchRoutes(waypoints, controller.signal);
+      const result = await fetchRoutes(waypoints, controller.signal, {
+        heading,
+        // A reroute takes the best way from here; alternatives are only worth
+        // a request when the rider is choosing.
+        alternates: !isReroute,
+      });
       if (controller.signal.aborted) return;
+      if (requestRef.current === controller) requestRef.current = null;
+
+      if (isReroute && (result.status !== "ok" || result.routes.length === 0)) {
+        // A failed reroute must not end the journey: a phone on a bike loses
+        // signal all the time. Carry on along the old line, which still
+        // shows where to go, and let the off-route check try again once the
+        // cooldown has passed.
+        lastRerouteRef.current = Date.now();
+        setStatus("navigating");
+        return;
+      }
 
       if (result.status !== "ok" || result.routes.length === 0) {
         setStatus("error");
@@ -162,6 +200,7 @@ export function useNavigation(fix: Fix | null): Navigation {
         return;
       }
 
+      setStops(next);
       setRoutes(result.routes);
       setSelectedIndex(0);
       indexRef.current = buildRouteIndex(result.routes[0]);
@@ -253,6 +292,7 @@ export function useNavigation(fix: Fix | null): Navigation {
     setRoutes([]);
     setSelectedIndex(0);
     setProgress(null);
+    setRouteBearing(null);
     setStatus("idle");
     setError(null);
     setRerouteCount(0);
@@ -271,6 +311,9 @@ export function useNavigation(fix: Fix | null): Navigation {
     const next = locateOnRoute(route, indexRef.current, fix.lngLat, segmentRef.current);
     segmentRef.current = next.segmentIndex;
     setProgress(next);
+
+    const along = routeBearingAt(route, indexRef.current, next.distanceAlongM, next.segmentIndex);
+    setRouteBearing(along);
 
     if (next.arrived) {
       if (!arrivalSpokenRef.current) {
@@ -302,19 +345,27 @@ export function useNavigation(fix: Fix | null): Navigation {
     }
 
     // --- off-route detection ------------------------------------------
-    if (isOffRoute(next.deviationM, fix.accuracy, OFF_ROUTE_M)) {
+    const headingError =
+      along != null && fix.heading != null && (fix.speed ?? 0) >= COURSE_TRUST_SPEED_MS
+        ? Math.abs(angleDelta(along, fix.heading))
+        : null;
+
+    if (isOffRoute(next.deviationM, fix.accuracy, OFF_ROUTE_M, headingError)) {
       offRouteRunRef.current += 1;
     } else {
       offRouteRunRef.current = 0;
     }
 
+    // Never start a second reroute while one is in flight: on a slow reply
+    // each new request used to abort the last, and none ever finished.
     const readyToReroute =
+      status !== "rerouting" &&
       offRouteRunRef.current >= OFF_ROUTE_FIXES &&
       Date.now() - lastRerouteRef.current > REROUTE_COOLDOWN_MS;
 
     if (readyToReroute) {
       offRouteRunRef.current = 0;
-      void request(stopsRef.current, true);
+      void request(remainingStops(stopsRef.current, route, next.segmentIndex), true);
     }
   }, [fix, route, status, request, speak]);
 
@@ -333,6 +384,7 @@ export function useNavigation(fix: Fix | null): Navigation {
     selectedIndex,
     route,
     progress,
+    routeBearing,
     status,
     error,
     rerouteCount,

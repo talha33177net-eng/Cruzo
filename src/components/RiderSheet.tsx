@@ -11,7 +11,7 @@ import {
   formatDistance,
   formatSpeed,
 } from "../lib/geo";
-import { destinationOf } from "../lib/groupTrip";
+import { destinationOf, SAME_PLACE_M } from "../lib/groupTrip";
 import { initialsOf } from "../lib/identity";
 import type { RiderState } from "../lib/types";
 import { type Palette, radius, space } from "../theme";
@@ -25,6 +25,16 @@ type Props = {
   expanded: boolean;
   onToggle: () => void;
   onFocusRider: (rider: RiderState) => void;
+  /**
+   * Plans this rider's own route to where `rider` is heading.
+   *
+   * Offered on every rider with a journey under way, not only the one the
+   * suggestion card picked: anyone should be able to go wherever anyone
+   * else is going.
+   */
+  onJoinTrip: (rider: RiderState) => void;
+  /** Where this rider is already heading, so a matching row can say so. */
+  selfDestination: LngLat | null;
   now: number;
 };
 
@@ -43,6 +53,8 @@ export function RiderSheet({
   expanded,
   onToggle,
   onFocusRider,
+  onJoinTrip,
+  selfDestination,
   now,
 }: Props) {
   const c = useChrome();
@@ -148,6 +160,23 @@ export function RiderSheet({
                       .join("  ·  ") || "In the party"}
                   </Text>
                 </View>
+
+                {!isSelf && destinationOf(rider) ? (
+                  selfDestination &&
+                  distanceMeters(selfDestination, destinationOf(rider)!.lngLat) <= SAME_PLACE_M ? (
+                    <Text style={styles.withYou}>With you</Text>
+                  ) : (
+                    <Pressable
+                      onPress={() => onJoinTrip(rider)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Ride to ${destinationOf(rider)!.label}, where ${rider.name} is heading`}
+                      hitSlop={6}
+                      style={({ pressed }) => [styles.join, pressed && styles.joinPressed]}
+                    >
+                      <Text style={styles.joinText}>Ride there</Text>
+                    </Pressable>
+                  )
+                ) : null}
 
                 <View style={styles.speedBox}>
                   <Text style={[styles.speed, stale && styles.speedStale]}>
@@ -260,6 +289,15 @@ const makeStyles = (c: Palette) =>
       overflow: "hidden",
     },
     rowMeta: { color: c.textDim, fontSize: 12 },
+    join: {
+      backgroundColor: c.accent,
+      borderRadius: radius.pill,
+      paddingHorizontal: space.md,
+      paddingVertical: space.xs + 2,
+    },
+    joinPressed: { opacity: 0.75 },
+    joinText: { color: c.onAccent, fontSize: 12, fontWeight: "900" },
+    withYou: { color: c.success, fontSize: 11, fontWeight: "800" },
     speedBox: { alignItems: "flex-end", minWidth: 46 },
     speed: { color: c.text, fontSize: 18, fontWeight: "800" },
     speedStale: { color: c.textFaint },

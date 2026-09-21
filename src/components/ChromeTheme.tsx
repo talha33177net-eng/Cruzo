@@ -1,7 +1,7 @@
 import { createContext, type ReactNode, useContext } from "react";
 
 import { darkPalette, lightPalette, type Palette } from "../theme";
-import type { MapStyleName } from "../lib/config";
+import type { MapTheme } from "../lib/mapTheme";
 
 const ChromeContext = createContext<Palette>(darkPalette);
 
@@ -12,15 +12,8 @@ const ChromeContext = createContext<Palette>(darkPalette);
  * to the night basemap wants the whole screen to stop glowing, and one control
  * doing both is one less thing to find with gloves on.
  */
-const PALETTE_FOR_STYLE: Record<MapStyleName, Palette> = {
-  liberty: lightPalette,
-  bright: lightPalette,
-  positron: lightPalette,
-  dark: darkPalette,
-};
-
-export function chromeFor(style: MapStyleName): Palette {
-  return PALETTE_FOR_STYLE[style] ?? darkPalette;
+export function chromeFor(theme: MapTheme): Palette {
+  return theme === "night" ? darkPalette : lightPalette;
 }
 
 export function ChromeProvider({

@@ -1,5 +1,6 @@
-import { memo } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { memo, useEffect, useRef } from "react";
+import { Animated, Easing, StyleSheet, Text, View } from "react-native";
+import Svg, { Defs, Path, RadialGradient, Stop } from "react-native-svg";
 
 import { colors, radius } from "../theme";
 
@@ -7,220 +8,282 @@ type Props = {
   initials: string;
   name: string;
   color: string;
-  /** Degrees clockwise from north, or `null` when the direction is unknown. */
-  heading: number | null;
+  /**
+   * Which way to point, in degrees clockwise from the top of the *screen*, or
+   * `null` when the direction is unknown.
+   *
+   * Screen, not north: a marker is a view laid over the map and does not turn
+   * with it, so the caller subtracts the map's bearing. Passing a compass
+   * heading straight through is what used to make the arrow point sideways
+   * whenever the driving view had rotated the map.
+   */
+  rotation: number | null;
   isSelf: boolean;
   isHost: boolean;
-  /** Dimmed styling for a rider whose last fix has gone cold. */
+  /** Dimmed styling for a rider whose last update has gone cold. */
   isStale: boolean;
-  /** Ringed in red while this rider has an SOS raised. */
+  /** Pulses red while this rider has an SOS raised. */
   isSos?: boolean;
   /** True once this rider's journey is under way. */
   isNavigating?: boolean;
 };
 
 /**
- * A rider's pin on the map.
+ * A rider on the map.
  *
- * The shape carries the rider's state. Parked, they are a disc with their
- * initials — easy to tell apart when a group is clustered at a fuel stop.
- * Riding, they become a chevron pointing where they are going, which is far
- * easier to read at a glance and at speed than a circle with a small arrow
- * stuck to it.
+ * Riding, a rider is a navigation arrow in their own colour — shaded on one
+ * side so it reads as a solid object, outlined in white so it holds up on any
+ * basemap. Parked, they are a disc with their initials, easy to tell apart
+ * when the group is clustered at a fuel stop; the direction they face is a
+ * soft beam of light for you, and a small notch on the ring for everyone else,
+ * so the one beam on screen is always yours.
  *
- * Every rider keeps their own colour in both shapes, and the name always sits
- * underneath in upright text, because a label that rotates with the heading is
- * unreadable half the time.
+ * Names sit underneath in upright text, because a label that turns with the
+ * heading is unreadable half the time. Your own marker has none: it is the
+ * one in the middle of the screen.
  */
 function RiderMarkerBase({
   initials,
   name,
   color,
-  heading,
+  rotation,
   isSelf,
   isHost,
   isStale,
   isSos = false,
   isNavigating = false,
 }: Props) {
-  const showDirection = heading != null;
-  const riding = isNavigating && showDirection;
+  const riding = isNavigating && rotation != null;
+  const turn = { transform: [{ rotate: `${rotation ?? 0}deg` }] };
 
   return (
     <View style={styles.root} pointerEvents="none">
-      <View style={[styles.stack, isStale && !isSos && styles.stale]}>
-        {/* A halo rather than a recolour, so the rider keeps their own colour
-            and stays identifiable in the list at the same time. */}
-        {isSos ? <View style={styles.sosHalo} /> : null}
+      <View style={[styles.frame, isStale && !isSos && styles.stale]}>
+        {isSos ? <SosPulse /> : null}
 
         {riding ? (
-          <View style={[styles.rotator, { transform: [{ rotate: `${heading}deg` }] }]}>
-            {isSelf ? <View style={styles.beamWide} /> : null}
-            {/* White triangle behind a slightly smaller coloured one, which
-                gives the chevron an outline against any basemap. */}
-            <View style={styles.chevronOutline} />
-            <View style={[styles.chevron, { borderBottomColor: isSos ? SOS_RED : color }]} />
+          <View style={[StyleSheet.absoluteFill, turn]}>
+            <Arrow color={isSos ? SOS_RED : color} size={isSelf ? 50 : 40} halo={isSelf} />
           </View>
         ) : (
           <>
-            {showDirection ? (
-              <View
-                style={[styles.rotator, { transform: [{ rotate: `${heading}deg` }] }]}
-              >
-                {isSelf ? (
-                  <>
-                    <View style={styles.beamWide} />
-                    <View style={styles.beamCore} />
-                  </>
-                ) : (
-                  <View style={[styles.arrow, { borderBottomColor: color }]} />
-                )}
+            {rotation != null ? (
+              <View style={[StyleSheet.absoluteFill, turn]}>
+                {isSelf ? <Beam color={color} /> : <Notch color={color} />}
               </View>
             ) : null}
 
             <View
               style={[
                 styles.disc,
-                { borderColor: isSos ? SOS_RED : color },
-                isSelf && styles.discSelf,
-                isSelf && { backgroundColor: color },
+                isSelf
+                  ? { backgroundColor: color, borderColor: "#FFFFFF" }
+                  : { borderColor: isSos ? SOS_RED : color },
               ]}
             >
               <Text
-                style={[styles.initials, { color: isSelf ? "#0B0E13" : color }]}
+                style={[styles.initials, { color: isSelf ? "#FFFFFF" : color }]}
                 numberOfLines={1}
               >
                 {initials}
               </Text>
             </View>
+
+            {isHost ? (
+              <View style={[styles.hostBadge, { backgroundColor: color }]}>
+                <Text style={styles.hostBadgeText}>★</Text>
+              </View>
+            ) : null}
           </>
         )}
+      </View>
 
-        {isHost && !riding ? (
-          <View style={[styles.hostDot, { backgroundColor: color }]}>
-            <Text style={styles.hostDotText}>H</Text>
+      {/* Inside the frame, so the marker's centre stays the rider's spot. */}
+      {!isSelf ? (
+        <View style={[styles.chipRow, riding && styles.chipRowRiding]}>
+          <View style={[styles.chip, isStale && !isSos && styles.stale]}>
+            <View style={[styles.chipDot, { backgroundColor: color }]} />
+            <Text style={styles.chipText} numberOfLines={1}>
+              {isHost ? `${name} ★` : name}
+            </Text>
           </View>
-        ) : null}
-      </View>
-
-      <View style={[styles.chip, riding && styles.chipRiding]}>
-        <Text style={styles.chipText} numberOfLines={1}>
-          {isSelf ? "You" : name}
-        </Text>
-      </View>
+        </View>
+      ) : null}
     </View>
   );
 }
 
 export const RiderMarker = memo(RiderMarkerBase);
 
+/**
+ * The riding arrow, drawn pointing up; the caller rotates it.
+ *
+ * Its visual centre — not its tip — sits on the rider's position, so turning
+ * it pivots on the spot instead of swinging the tail around.
+ */
+function Arrow({ color, size, halo }: { color: string; size: number; halo: boolean }) {
+  const offset = (FRAME - size) / 2;
+  return (
+    <>
+      {halo ? (
+        <View
+          style={[styles.halo, { backgroundColor: color, borderColor: color }]}
+        />
+      ) : null}
+      <Svg
+        width={size}
+        height={size}
+        viewBox="0 0 48 48"
+        style={{ position: "absolute", left: offset, top: offset }}
+      >
+        {/* Drop shadow: the same outline, offset and faint. */}
+        <Path d={ARROW} fill="#000000" opacity={0.28} transform="translate(0.8 2.2)" />
+        <Path
+          d={ARROW}
+          fill="#FFFFFF"
+          stroke="#FFFFFF"
+          strokeWidth={5}
+          strokeLinejoin="round"
+        />
+        <Path d={ARROW_LEFT} fill={color} />
+        <Path d={ARROW_RIGHT} fill={color} />
+        {/* Darken one side so the arrow reads as a folded, solid shape. */}
+        <Path d={ARROW_RIGHT} fill="#000000" opacity={0.22} />
+      </Svg>
+    </>
+  );
+}
+
+/** Your facing direction while parked: a soft cone of light ahead of you. */
+function Beam({ color }: { color: string }) {
+  return (
+    <Svg width={FRAME} height={FRAME} style={StyleSheet.absoluteFill}>
+      <Defs>
+        <RadialGradient id="beam" cx={C} cy={C} r={BEAM_R} gradientUnits="userSpaceOnUse">
+          <Stop offset="0" stopColor={color} stopOpacity={0.6} />
+          <Stop offset="0.55" stopColor={color} stopOpacity={0.28} />
+          <Stop offset="1" stopColor={color} stopOpacity={0} />
+        </RadialGradient>
+      </Defs>
+      <Path d={BEAM} fill="url(#beam)" />
+    </Svg>
+  );
+}
+
+/** Someone else's facing direction: a small pointer on their ring. */
+function Notch({ color }: { color: string }) {
+  return (
+    <Svg width={FRAME} height={FRAME} style={StyleSheet.absoluteFill}>
+      <Path
+        d={NOTCH}
+        fill={color}
+        stroke="#FFFFFF"
+        strokeWidth={1.5}
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+/** A ring that swells and fades on a loop, so an SOS cannot be missed. */
+function SosPulse() {
+  const t = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(t, {
+        toValue: 1,
+        duration: 1200,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [t]);
+
+  return (
+    <>
+      <View style={styles.sosCore} />
+      <Animated.View
+        style={[
+          styles.sosRing,
+          {
+            opacity: t.interpolate({ inputRange: [0, 1], outputRange: [0.9, 0] }),
+            transform: [{ scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1.5] }) }],
+          },
+        ]}
+      />
+    </>
+  );
+}
+
 const SOS_RED = "#D32029";
 
-const DISC = 40;
-/** The rotating frame; the marker sits at its centre. */
-const RING = 116;
+/** The square every marker is drawn in; the rider's position is its centre. */
+const FRAME = 128;
+const C = FRAME / 2;
+const DISC = 38;
+const BEAM_R = 60;
 
-const CHEVRON_W = 17;
-const CHEVRON_H = 40;
-const OUTLINE = 4;
+// 48-unit arrow: tip at the top, a notch cut into the tail. Its centroid sits
+// at (24, 25), close enough to the box centre to turn on the spot.
+const ARROW = "M24 5 L40.5 41 Q41.2 43 39.2 42.2 L24 35.5 L8.8 42.2 Q6.8 43 7.5 41 Z";
+const ARROW_LEFT = "M24 5 L24 35.5 L8.8 42.2 Q6.8 43 7.5 41 Z";
+const ARROW_RIGHT = "M24 5 L40.5 41 Q41.2 43 39.2 42.2 L24 35.5 Z";
+
+/** A 64° wedge fanning up from the centre. */
+const BEAM = (() => {
+  const half = (32 * Math.PI) / 180;
+  const x1 = C - BEAM_R * Math.sin(half);
+  const x2 = C + BEAM_R * Math.sin(half);
+  const y = C - BEAM_R * Math.cos(half);
+  return `M${C} ${C} L${x1} ${y} A${BEAM_R} ${BEAM_R} 0 0 1 ${x2} ${y} Z`;
+})();
+
+/** A small triangle just outside the top of the disc. */
+const NOTCH = (() => {
+  const base = C - DISC / 2 + 1;
+  return `M${C} ${base - 11} L${C + 7} ${base} L${C - 7} ${base} Z`;
+})();
 
 const styles = StyleSheet.create({
-  root: { alignItems: "center", width: RING },
-  stack: {
-    width: RING,
-    height: RING,
+  root: { width: FRAME, height: FRAME },
+  frame: {
+    width: FRAME,
+    height: FRAME,
     alignItems: "center",
     justifyContent: "center",
   },
   stale: { opacity: 0.45 },
-  sosHalo: {
+
+  halo: {
     position: "absolute",
-    width: DISC + 26,
-    height: DISC + 26,
-    borderRadius: (DISC + 26) / 2,
+    left: C - 30,
+    top: C - 30,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    opacity: 0.16,
+    borderWidth: 1,
+  },
+
+  sosCore: {
+    position: "absolute",
+    width: DISC + 22,
+    height: DISC + 22,
+    borderRadius: (DISC + 22) / 2,
+    backgroundColor: "rgba(211, 32, 41, 0.22)",
+    borderWidth: 3,
+    borderColor: SOS_RED,
+  },
+  sosRing: {
+    position: "absolute",
+    width: DISC + 44,
+    height: DISC + 44,
+    borderRadius: (DISC + 44) / 2,
     borderWidth: 4,
     borderColor: SOS_RED,
-    backgroundColor: "rgba(211, 32, 41, 0.25)",
-  },
-
-  rotator: {
-    position: "absolute",
-    width: RING,
-    height: RING,
-    alignItems: "center",
-  },
-
-  /**
-   * The riding chevron, centred on the marker point.
-   *
-   * `top` places the triangle so its middle sits at the centre of rotation;
-   * otherwise it would swing around the rider instead of turning on the spot.
-   */
-  chevron: {
-    position: "absolute",
-    top: (RING - CHEVRON_H) / 2,
-    width: 0,
-    height: 0,
-    borderLeftWidth: CHEVRON_W,
-    borderRightWidth: CHEVRON_W,
-    borderBottomWidth: CHEVRON_H,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-  },
-  chevronOutline: {
-    position: "absolute",
-    top: (RING - CHEVRON_H) / 2 - OUTLINE,
-    width: 0,
-    height: 0,
-    borderLeftWidth: CHEVRON_W + OUTLINE,
-    borderRightWidth: CHEVRON_W + OUTLINE,
-    borderBottomWidth: CHEVRON_H + OUTLINE * 1.5,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    borderBottomColor: "#FFFFFF",
-  },
-
-  /**
-   * Both beams are downward-pointing triangles whose apex sits on the marker
-   * and whose base fans out ahead of it. `bottom: RING / 2` puts that apex
-   * exactly at the centre of rotation.
-   */
-  beamWide: {
-    position: "absolute",
-    bottom: RING / 2,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 30,
-    borderRightWidth: 30,
-    borderTopWidth: 44,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    borderTopColor: "rgba(255, 92, 26, 0.22)",
-  },
-  beamCore: {
-    position: "absolute",
-    bottom: RING / 2,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 13,
-    borderRightWidth: 13,
-    borderTopWidth: 40,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    borderTopColor: "rgba(255, 92, 26, 0.85)",
-  },
-
-  /** Compact arrowhead for a parked rider facing a known direction. */
-  arrow: {
-    position: "absolute",
-    top: (RING - DISC) / 2 - 15,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderBottomWidth: 11,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
   },
 
   disc: {
@@ -237,34 +300,41 @@ const styles = StyleSheet.create({
     shadowRadius: 5,
     shadowOffset: { width: 0, height: 2 },
   },
-  discSelf: { borderColor: "#FFFFFF" },
-  initials: { fontSize: 14, fontWeight: "800", letterSpacing: 0.3 },
+  initials: { fontSize: 13, fontWeight: "900", letterSpacing: 0.3 },
 
-  hostDot: {
+  hostBadge: {
     position: "absolute",
-    top: (RING - DISC) / 2 - 2,
-    right: (RING - DISC) / 2 - 2,
-    width: 17,
-    height: 17,
+    top: C - DISC / 2 - 5,
+    left: C + DISC / 2 - 12,
+    width: 18,
+    height: 18,
     borderRadius: 9,
     borderWidth: 2,
-    borderColor: colors.bg,
+    borderColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
   },
-  hostDotText: { fontSize: 9, fontWeight: "900", color: "#0B0E13" },
+  hostBadgeText: { fontSize: 9, color: "#FFFFFF", fontWeight: "900", marginTop: -1 },
 
+  chipRow: {
+    position: "absolute",
+    top: C + DISC / 2 + 5,
+    left: 0,
+    right: 0,
+    alignItems: "center",
+  },
+  /** The arrow reaches a little lower than the disc. */
+  chipRowRiding: { top: C + 24 },
   chip: {
-    marginTop: -28,
-    maxWidth: RING,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    maxWidth: FRAME,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: radius.pill,
-    backgroundColor: colors.scrim,
-    borderWidth: 1,
-    borderColor: colors.border,
+    backgroundColor: "rgba(12, 16, 22, 0.86)",
   },
-  /** The chevron reaches lower than the disc, so the label drops with it. */
-  chipRiding: { marginTop: -18 },
-  chipText: { color: colors.text, fontSize: 11, fontWeight: "700" },
+  chipDot: { width: 7, height: 7, borderRadius: 4 },
+  chipText: { color: "#FFFFFF", fontSize: 11, fontWeight: "800", flexShrink: 1 },
 });

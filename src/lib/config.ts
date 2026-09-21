@@ -16,33 +16,12 @@ export const supabaseAnonKey = anonKey;
 export const isBackendConfigured = url.length > 0 && anonKey.length > 0;
 
 /**
- * Basemap styles from OpenFreeMap — an OpenStreetMap-derived vector tile host
- * that is free, needs no API key and sets no request quota.
+ * Basemap tiles come from OpenFreeMap — an OpenStreetMap-derived vector tile
+ * host that is free, needs no API key and sets no request quota. How they are
+ * painted is Cruzo's own style (see `mapTheme.ts`).
  *
  * @see https://openfreemap.org
  */
-export const mapStyles = {
-  liberty: "https://tiles.openfreemap.org/styles/liberty",
-  bright: "https://tiles.openfreemap.org/styles/bright",
-  dark: "https://tiles.openfreemap.org/styles/dark",
-  positron: "https://tiles.openfreemap.org/styles/positron",
-} as const;
-
-export type MapStyleName = keyof typeof mapStyles;
-
-export const mapStyleOrder: MapStyleName[] = [
-  "liberty",
-  "dark",
-  "bright",
-  "positron",
-];
-
-export const mapStyleLabels: Record<MapStyleName, string> = {
-  liberty: "Day",
-  dark: "Night",
-  bright: "Vivid",
-  positron: "Minimal",
-};
 
 /** How often each rider publishes a position to the party. */
 export const LOCATION_INTERVAL_MS = 3000;
@@ -56,6 +35,35 @@ export const LOCATION_DISTANCE_M = 5;
  */
 export const NAV_LOCATION_INTERVAL_MS = 1000;
 export const NAV_LOCATION_DISTANCE_M = 2;
+
+/**
+ * How often a live position is broadcast to the party, riding and parked.
+ *
+ * Positions go over Realtime broadcast, not presence (see `useRideChannel`).
+ * Every message is delivered to every other rider, and the free tier allows
+ * 100 a second across the project, so a party of ten riding at one message
+ * every two seconds uses under half of it. Markers glide between updates, so
+ * this reads as smooth movement rather than jumps.
+ */
+export const NAV_POSITION_SEND_MS = 2000;
+export const POSITION_SEND_MS = 4000;
+
+/**
+ * A parked bike produces no GPS fixes at all, so the last one is re-sent this
+ * often — otherwise a rider waiting at the meeting point looks disconnected.
+ */
+export const POSITION_KEEPALIVE_MS = 10000;
+
+/**
+ * Closest together two presence updates may be.
+ *
+ * The free tier allows each client 5 presence calls per 30 seconds and
+ * throttles anyone over it; 8 seconds keeps a phone at 4 at most.
+ */
+export const PRESENCE_MIN_GAP_MS = 8000;
+
+/** Presence is refreshed this often anyway, so late joiners see a recent spot. */
+export const PRESENCE_REFRESH_MS = 30000;
 
 /**
  * How often one rider tells the server the party is still occupied.

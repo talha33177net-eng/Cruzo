@@ -21,6 +21,14 @@ type Props = {
   switching: boolean;
   /** The rider being followed has changed where the group is going. */
   changed: boolean;
+  /**
+   * Shrunk to a single slim bar after "Later".
+   *
+   * It never disappears outright: waving the card away used to leave no way
+   * back to the group's destination, which is the one thing a group ride
+   * needs to be able to do at any time.
+   */
+  collapsed?: boolean;
   onAccept: () => void;
   onDismiss: () => void;
 };
@@ -42,11 +50,31 @@ export function GroupTripCard({
   distanceM,
   switching,
   changed,
+  collapsed = false,
   onAccept,
   onDismiss,
 }: Props) {
   const c = useChrome();
   const styles = useMemo(() => makeStyles(c), [c]);
+
+  if (collapsed) {
+    return (
+      <Pressable
+        onPress={onAccept}
+        accessibilityRole="button"
+        accessibilityLabel={`Ride with ${leaderName} to ${destinationLabel}`}
+        style={({ pressed }) => [styles.bar, pressed && styles.pressed]}
+      >
+        <View style={[styles.barDot, { backgroundColor: leaderColor }]} />
+        <Text style={styles.barText} numberOfLines={1}>
+          <Text style={styles.barLeader}>{leaderName}</Text>
+          {"  →  "}
+          {destinationLabel}
+        </Text>
+        <Text style={styles.barAction}>{switching ? "Switch" : "Join"}</Text>
+      </Pressable>
+    );
+  }
 
   const headline = changed
     ? `${leaderName} changed destination`
@@ -100,11 +128,11 @@ export function GroupTripCard({
         <Pressable
           onPress={onDismiss}
           accessibilityRole="button"
-          accessibilityLabel="Dismiss this suggestion"
+          accessibilityLabel="Decide later"
           hitSlop={8}
           style={({ pressed }) => [styles.dismiss, pressed && styles.pressed]}
         >
-          <Text style={styles.dismissText}>Not now</Text>
+          <Text style={styles.dismissText}>Later</Text>
         </Pressable>
       </View>
     </View>
@@ -184,4 +212,31 @@ const makeStyles = (c: Palette) =>
     dismiss: { paddingVertical: 2, alignItems: "center" },
     dismissText: { color: c.textDim, fontWeight: "700", fontSize: 11 },
     pressed: { opacity: 0.75 },
+    bar: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: space.sm,
+      marginHorizontal: space.md,
+      marginBottom: space.sm,
+      backgroundColor: c.surfaceAlt,
+      borderWidth: 1,
+      borderColor: c.accentDim,
+      borderRadius: radius.pill,
+      paddingVertical: space.sm,
+      paddingLeft: space.md,
+      paddingRight: space.xs,
+    },
+    barDot: { width: 10, height: 10, borderRadius: 5 },
+    barText: { flex: 1, color: c.textDim, fontSize: 13, fontWeight: "600" },
+    barLeader: { color: c.text, fontWeight: "800" },
+    barAction: {
+      color: c.onAccent,
+      backgroundColor: c.accent,
+      fontWeight: "900",
+      fontSize: 12,
+      paddingHorizontal: space.md,
+      paddingVertical: space.xs + 2,
+      borderRadius: radius.pill,
+      overflow: "hidden",
+    },
   });

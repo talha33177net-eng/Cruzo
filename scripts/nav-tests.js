@@ -11,6 +11,7 @@ const path = require("path");
 
 const { decodePolyline } = require("../.test-build/polyline.js");
 const nav = require("../.test-build/navigation.js");
+const motion = require("../.test-build/motion.js");
 
 const fixture = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures", "route-dhaka.json"), "utf8"),
@@ -156,6 +157,61 @@ check("a real departure still fires despite poor accuracy", nav.isOffRoute(200, 
 check("accuracy slack is capped at 40 m", nav.isOffRoute(85, 500, 40), true);
 check("null accuracy uses the base threshold", nav.isOffRoute(45, null, 40), true);
 
+// A parallel street 25 m away never crosses the distance line on its own.
+check("a close parallel road alone is not off-route", nav.isOffRoute(25, 5, 40), false);
+check("riding it the wrong way is off-route", nav.isOffRoute(25, 5, 40, 90), true);
+check("a small course wobble on the route is not", nav.isOffRoute(25, 5, 40, 30), false);
+check("heading alone never fires when on the line", nav.isOffRoute(8, 5, 40, 180), false);
+
+console.log("\nroute direction and remaining stops");
+const midAlong = index.cumulative[seg];
+const pt = nav.pointAlong(route, index, midAlong, 0);
+check("pointAlong lands on the shape point", pt[0], route.shape[seg][0], 1e-6);
+check("pointAlong clamps before the start", nav.pointAlong(route, index, -50)[0], route.shape[0][0], 1e-9);
+check("pointAlong clamps past the end", nav.pointAlong(route, index, index.totalM + 50)[1], last[1], 1e-9);
+// The route direction must agree with the direction a rider riding it takes.
+let bearingMisses = 0;
+for (let i = 10; i < route.shape.length - 10; i += 7) {
+  const at = nav.locateOnRoute(route, index, route.shape[i], null);
+  const b = nav.routeBearingAt(route, index, at.distanceAlongM, at.segmentIndex);
+  const ahead = nav.pointAlong(route, index, at.distanceAlongM + 20, at.segmentIndex);
+  const expected = bearingBetween(route.shape[i], ahead);
+  const diff = Math.abs(((((b - expected) % 360) + 540) % 360) - 180);
+  if (diff > 45) bearingMisses += 1;
+}
+check("route bearing follows the road", bearingMisses, 0);
+
+const multi = { ...route, stopIndices: [100, 200] };
+check("all stops ahead at the start", nav.remainingStops(["a", "b", "end"], multi, 5), ["a", "b", "end"]);
+check("a passed stop is dropped", nav.remainingStops(["a", "b", "end"], multi, 150), ["b", "end"]);
+check("the destination is always kept", nav.remainingStops(["a", "b", "end"], multi, 999), ["end"]);
+check("a single stop is untouched", nav.remainingStops(["end"], route, 999), ["end"]);
+
+console.log("\nmotion smoothing");
+check("heading smoothing takes the short way past north", motion.smoothHeading(350, 10, 0.5), 0, 1e-9);
+check("full weight lands on the reading", motion.smoothHeading(90, 180, 1), 180, 1e-9);
+
+// A parked bike with fixes wandering ±5 m should barely move.
+const parked = new motion.PositionFilter();
+const home = route.shape[0];
+let worst = 0;
+for (let i = 0; i < 60; i += 1) {
+  const noisy = offsetMetres(home, 5, (i * 137) % 360);
+  const out = parked.update(noisy, 8, 1000 * (i + 1), 0.2, null);
+  worst = Math.max(worst, geoDistance(out, home));
+}
+check("a parked bike stays within 6 m", worst < 6, true);
+
+// A bike at 15 m/s must not be dragged behind by the smoothing.
+const riding = new motion.PositionFilter();
+let lagM = 0;
+for (let i = 0; i < 30; i += 1) {
+  const truthAt = offsetMetres(home, 15 * i, 45);
+  const out = riding.update(truthAt, 5, 1000 * (i + 1), 15, 45);
+  if (i > 5) lagM = Math.max(lagM, geoDistance(out, truthAt));
+}
+check("a moving bike is tracked within 3 m", lagM < 3, true);
+
 console.log("\nformatting");
 check("under 30 m says Now", nav.formatManeuverDistance(12), "Now");
 check("metres round to 10", nav.formatManeuverDistance(447), "450 m");
@@ -194,4 +250,14 @@ function perpendicularOffset(a, b, metres) {
   const nx = -dy / length;
   const ny = dx / length;
   return [mid[0] + (nx * metres) / kx, mid[1] + (ny * metres) / M_PER_DEG];
+}
+
+function bearingBetween(a, b) {
+  const kx = Math.cos((((a[1] + b[1]) / 2) * Math.PI) / 180);
+  return ((Math.atan2((b[0] - a[0]) * kx, b[1] - a[1]) * 180) / Math.PI + 360) % 360;
+}
+
+function geoDistance(a, b) {
+  const kx = M_PER_DEG * Math.cos((a[1] * Math.PI) / 180);
+  return Math.hypot((a[0] - b[0]) * kx, (a[1] - b[1]) * M_PER_DEG);
 }

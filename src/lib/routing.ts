@@ -53,23 +53,33 @@ type ValhallaResponse = {
  * does not offer them once there are intermediate stops, so asking anyway
  * would spend a request against a free community service for nothing.
  *
- * Pass a signal to cancel an in-flight request — during a reroute the previous
- * one is always abandoned rather than raced.
+ * Pass a signal to cancel an in-flight request.
+ *
+ * `heading` is the rider's direction of travel at the first stop. Without it
+ * Valhalla routes from a standing start and happily begins with "turn around"
+ * — which, for a rider already rolling down a road, is wrong the moment it
+ * arrives and triggers another reroute straight away. With it the new route
+ * starts the way the bike is already going.
  */
 export async function fetchRoutes(
   stops: LngLat[],
   signal?: AbortSignal,
+  options: { heading?: number | null; alternates?: boolean } = {},
 ): Promise<RouteResult> {
   if (stops.length < 2) {
     return { status: "error", message: "A route needs a start and a destination." };
   }
 
   const body: Record<string, unknown> = {
-    locations: stops.map(([lon, lat]) => ({ lat, lon })),
+    locations: stops.map(([lon, lat], i) =>
+      i === 0 && options.heading != null
+        ? { lat, lon, heading: Math.round(options.heading), heading_tolerance: 45 }
+        : { lat, lon },
+    ),
     costing: "motorcycle",
     directions_options: { units: "kilometers", language: "en-US" },
   };
-  if (stops.length === 2) body.alternates = 2;
+  if (stops.length === 2 && options.alternates !== false) body.alternates = 2;
 
   // The public instance is a shared community service; give it a hard ceiling
   // so a slow reply cannot wedge the navigation loop.

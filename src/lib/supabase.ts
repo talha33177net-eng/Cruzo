@@ -22,7 +22,8 @@ export const supabase = createClient(
       detectSessionInUrl: false,
     },
     realtime: {
-      // Comfortably above our ~1 message every 3 seconds per rider.
+      // Comfortably above our one position every two seconds, plus chat and
+      // voice signalling.
       params: { eventsPerSecond: 20 },
     },
   },

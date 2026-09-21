@@ -16,7 +16,9 @@ backend. Nothing on the map requires an API key today — keep it that way.
 
 Current free services, all keyless:
 
-- **Tiles** — OpenFreeMap (`src/lib/config.ts`)
+- **Tiles** — OpenFreeMap vector tiles, painted by Cruzo's own Google-style
+  day/night styles in `src/lib/mapTheme.ts` (validated with
+  `@maplibre/maplibre-gl-style-spec`'s `validateStyleMin`)
 - **Routing** — FOSSGIS Valhalla, `motorcycle` costing (`src/lib/routing.ts`)
 - **Geocoding** — Photon (`src/lib/geocode.ts`)
 - **Voice** — `expo-speech`, on-device
@@ -46,10 +48,20 @@ without a reason.
   live response; do not rewrite it from memory.
 - **Valhalla encodes shapes at precision 6**, not the usual 5. Decoding at the
   wrong precision shifts the whole route by a factor of ten.
-- **Positions are never stored.** They ride on Supabase Realtime Presence and
-  vanish on disconnect. Do not "improve" this by writing positions to a table —
-  it would add storage cost, create a location history, and lose the automatic
-  drop-on-disconnect behaviour.
+- **Positions are never stored.** Presence says *who* is in the party (and
+  drops a rider on disconnect); live positions ride on Realtime **broadcast**
+  (`pos` event) and are only drawn for riders in the presence roster. Do not
+  "improve" this by writing positions to a table — it would add storage cost,
+  create a location history, and lose the automatic drop-on-disconnect
+  behaviour.
+- **Presence is rate-limited: 5 calls per client per 30 s on the free tier.**
+  Never put a per-fix position back on `track()` — that is what made riders
+  drop out and journeys never reach the group. `useRideChannel` spaces tracks
+  by `PRESENCE_MIN_GAP_MS` and sends everything time-sensitive by broadcast.
+- **Markers are views over the map and do not rotate with it.** Every
+  direction drawn on one is `heading − mapBearing`. Marker glide and camera
+  follow share `GLIDE_MS` and both move linearly; changing one without the
+  other makes the marker wobble against the map.
 - **Chat is never stored either.** It is Realtime broadcast on `chat:<code>`,
   held in memory on each phone; a late joiner is handed history by the
   lowest-id rider (`isCoordinator`). Do not add a messages table.

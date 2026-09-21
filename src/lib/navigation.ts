@@ -258,9 +258,101 @@ export function isOffRoute(
   deviationM: number,
   accuracyM: number | null,
   baseThresholdM: number,
+  headingErrorDeg: number | null = null,
 ): boolean {
   const slack = accuracyM != null && accuracyM > 0 ? Math.min(accuracyM, 40) : 0;
-  return deviationM > baseThresholdM + slack;
+  if (deviationM > baseThresholdM + slack) return true;
+
+  // Riding a road that runs close beside the route — common in a dense city
+  // — never gets far enough away to cross the distance line. Travelling in a
+  // clearly different direction from the route at that point gives it away,
+  // so a heading that disagrees halves the distance needed. The caller only
+  // passes a heading error when the bike is moving fast enough for its GPS
+  // course to mean something.
+  return (
+    headingErrorDeg != null &&
+    headingErrorDeg > WRONG_WAY_DEG &&
+    deviationM > (baseThresholdM + slack) / 2
+  );
+}
+
+/** A course further than this from the route's direction is not following it. */
+export const WRONG_WAY_DEG = 60;
+
+/**
+ * The point `distanceM` along the route from its start.
+ *
+ * `fromSegment` is a hint where to begin looking; the answer is the same
+ * without it, only slower.
+ */
+export function pointAlong(
+  route: Route,
+  index: RouteIndex,
+  distanceM: number,
+  fromSegment = 0,
+): LngLat {
+  const { shape } = route;
+  const { cumulative } = index;
+  if (shape.length === 0) return [0, 0];
+  if (distanceM <= 0) return shape[0];
+  if (distanceM >= index.totalM) return shape[shape.length - 1];
+
+  let i = clamp(fromSegment, 0, shape.length - 2);
+  while (i > 0 && cumulative[i] > distanceM) i -= 1;
+  while (i < shape.length - 2 && cumulative[i + 1] < distanceM) i += 1;
+
+  const span = cumulative[i + 1] - cumulative[i];
+  const t = span > 0 ? (distanceM - cumulative[i]) / span : 0;
+  const a = shape[i];
+  const b = shape[i + 1];
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+/**
+ * The direction the route runs at a point along it, in degrees from north.
+ *
+ * Measured across a stretch either side rather than along a single shape
+ * segment: segments on a curve can be a metre long and point anywhere, where
+ * the road as a whole does not.
+ */
+export function routeBearingAt(
+  route: Route,
+  index: RouteIndex,
+  distanceAlongM: number,
+  segmentHint = 0,
+  behindM = 10,
+  aheadM = 20,
+): number | null {
+  if (route.shape.length < 2) return null;
+  const from = pointAlong(route, index, distanceAlongM - behindM, segmentHint);
+  const to = pointAlong(route, index, distanceAlongM + aheadM, segmentHint);
+  if (metresBetween(from, to) < 1) return null;
+  return bearing(from, to);
+}
+
+/**
+ * The stops still ahead of a rider at `segmentIndex` on `route`.
+ *
+ * A reroute plans again from where the rider is; sending the old stop list
+ * would turn them back to a fuel stop they have already left.
+ */
+export function remainingStops<T>(stops: T[], route: Route, segmentIndex: number): T[] {
+  if (stops.length <= 1) return stops;
+  const ahead: T[] = [];
+  for (let i = 0; i < stops.length - 1; i += 1) {
+    const at = route.stopIndices[i];
+    // An unknown position keeps the stop: skipping one wrongly is worse.
+    if (at == null || segmentIndex < at) ahead.push(stops[i]);
+  }
+  ahead.push(stops[stops.length - 1]);
+  return ahead;
+}
+
+function bearing(a: LngLat, b: LngLat): number {
+  const kx = Math.cos(toRad((a[1] + b[1]) / 2));
+  const dx = (b[0] - a[0]) * kx;
+  const dy = b[1] - a[1];
+  return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
 }
 
 /** Spoken and displayed distance, rounded the way a rider expects to hear it. */

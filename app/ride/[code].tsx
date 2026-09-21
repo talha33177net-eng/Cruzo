@@ -3,6 +3,7 @@ import {
   type CameraRef,
   GeoJSONSource,
   Layer,
+  type LngLat,
   Map,
   Marker,
   type PressEvent,
@@ -12,14 +13,16 @@ import * as Haptics from "expo-haptics";
 import * as Speech from "expo-speech";
 import { useKeepAwake } from "expo-keep-awake";
 import { router, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  BackHandler,
   type NativeSyntheticEvent,
   Pressable,
   Share,
   StyleSheet,
   Text,
+  useWindowDimensions,
   Vibration,
   View,
 } from "react-native";
@@ -38,6 +41,7 @@ import { RoutePreview } from "../../src/components/RoutePreview";
 import { SosAlarm } from "../../src/components/SosAlarm";
 import { TripPanel } from "../../src/components/TripPanel";
 import { VoiceBar } from "../../src/components/VoiceBar";
+import { useGlide } from "../../src/hooks/useGlide";
 import { useLiveLocation } from "../../src/hooks/useLiveLocation";
 import { useNavigation } from "../../src/hooks/useNavigation";
 import { useRideChannel } from "../../src/hooks/useRideChannel";
@@ -45,12 +49,8 @@ import { useRideChat } from "../../src/hooks/useRideChat";
 import { useVoiceCall } from "../../src/hooks/useVoiceCall";
 import { type ChatMessage, isCoordinator } from "../../src/lib/chat";
 import {
-  mapStyleLabels,
-  mapStyleOrder,
-  mapStyles,
   PARTY_HEARTBEAT_MS,
   STALE_AFTER_MS,
-  type MapStyleName,
 } from "../../src/lib/config";
 import {
   bearingDegrees,
@@ -60,9 +60,23 @@ import {
   formatSpeed,
 } from "../../src/lib/geo";
 import { reverseGeocode } from "../../src/lib/geocode";
-import { pickGroupTrip, sameDestination, tripForPresence } from "../../src/lib/groupTrip";
+import {
+  pickGroupTrip,
+  sameDestination,
+  sanitizeTrip,
+  tripForPresence,
+} from "../../src/lib/groupTrip";
 import { initialsOf } from "../../src/lib/identity";
+import {
+  type MapTheme,
+  mapStyleFor,
+  OVERLAY_BEFORE_LAYER,
+  routeColors,
+  themeForHour,
+} from "../../src/lib/mapTheme";
+import { angleDelta, wrapDegrees } from "../../src/lib/motion";
 import { endParty, findParty, type Party, touchParty } from "../../src/lib/party";
+import { forgetRide, rememberRide } from "../../src/lib/recentRides";
 import { colorForRider } from "../../src/lib/riderColor";
 import { normalizeRideCode, rideCodeToLink } from "../../src/lib/rideCode";
 import type { Destination, RiderState } from "../../src/lib/types";
@@ -88,26 +102,44 @@ const OVERVIEW_PADDING = { top: 180, right: 70, bottom: 280, left: 70 };
 /** How long the camera stays where the rider left it before following again. */
 const RESUME_FOLLOW_MS = 10000;
 
-/** How long the whole route is shown before diving into the driving view. */
-const ROUTE_PREVIEW_MS = 2600;
+/**
+ * How long the marker glides to each new position, and how long the camera
+ * takes to follow it. They must match — and both move linearly — or the
+ * marker and the map drift apart and the rider sees it wobble.
+ */
+const GLIDE_MS = 1000;
+
+/** Other riders update every few seconds, so they glide for longer. */
+const OTHERS_GLIDE_MS = 1500;
+
+/**
+ * Within this distance of the route, the rider is drawn on the line itself.
+ *
+ * Kept tight: a side street runs 20–30 m from the main road in town, and
+ * snapping from there drew the rider on a road they were not on.
+ */
+const SNAP_M = 15;
+
+const NO_PADDING = { top: 0, right: 0, bottom: 0, left: 0 };
 
 export default function RideScreen() {
-  const [styleName, setStyleName] = useState<MapStyleName>("liberty");
-  const palette = chromeFor(styleName);
+  // Starts in day or night by the clock; the rider can flip it by hand.
+  const [theme, setTheme] = useState<MapTheme>(() => themeForHour(new Date().getHours()));
+  const palette = chromeFor(theme);
 
   return (
     <ChromeProvider palette={palette}>
-      <RideScreenInner styleName={styleName} setStyleName={setStyleName} />
+      <RideScreenInner theme={theme} setTheme={setTheme} />
     </ChromeProvider>
   );
 }
 
 function RideScreenInner({
-  styleName,
-  setStyleName,
+  theme,
+  setTheme,
 }: {
-  styleName: MapStyleName;
-  setStyleName: (next: MapStyleName) => void;
+  theme: MapTheme;
+  setTheme: (next: MapTheme) => void;
 }) {
   useKeepAwake();
 
@@ -120,6 +152,7 @@ function RideScreenInner({
 
   const c = useChrome();
   const styles = useMemo(() => makeStyles(c), [c]);
+  const route = routeColors[theme];
 
   const [party, setParty] = useState<Party | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -136,8 +169,16 @@ function RideScreenInner({
   const [ended, setEnded] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [toast, setToast] = useState<ChatMessage | null>(null);
-  /** The group-trip suggestion this rider waved away; a new trip asks again. */
-  const [dismissedTrip, setDismissedTrip] = useState<string | null>(null);
+  /** The group trip this rider put off; it shrinks to a bar, and a new trip asks again. */
+  const [laterTrip, setLaterTrip] = useState<string | null>(null);
+  /**
+   * The bearing the map is turned to, as last commanded or dragged.
+   *
+   * Markers are views over the map and do not turn with it, so every
+   * direction drawn on one has this taken off first.
+   */
+  const [mapBearing, setMapBearing] = useState(0);
+  const { height: screenHeight } = useWindowDimensions();
   /** Whose destination this rider last accepted, to word a change of plan. */
   const [followedLeader, setFollowedLeader] = useState<string | null>(null);
 
@@ -214,12 +255,52 @@ function RideScreenInner({
    * carriageway; snapping keeps the marker on the road the rider is actually
    * riding, which is most of what makes a map feel accurate.
    */
+  const courseAgrees =
+    location.course == null ||
+    nav.routeBearing == null ||
+    Math.abs(angleDelta(location.course, nav.routeBearing)) < 60;
+  const onRoute = Boolean(
+    navigating && nav.progress && nav.progress.deviationM < SNAP_M && courseAgrees,
+  );
+
   const displayPosition = useMemo(() => {
-    if (nav.progress && navigating && nav.progress.deviationM < 25) {
-      return nav.progress.snapped;
-    }
+    if (onRoute && nav.progress) return nav.progress.snapped;
     return location.fix?.lngLat ?? null;
-  }, [nav.progress, navigating, location.fix]);
+  }, [onRoute, nav.progress, location.fix]);
+
+  /**
+   * Which way the driving view faces.
+   *
+   * On the route, the road's own direction: it cannot jitter, and it turns
+   * the map smoothly through a bend. Off it, the GPS course. Never the
+   * compass, which swings next to an engine and used to spin the whole map at
+   * every red light. Held at its last value while nothing better is known.
+   */
+  const navBearingRef = useRef<number | null>(null);
+  const liveNavBearing = onRoute ? nav.routeBearing : location.course;
+  if (liveNavBearing != null) navBearingRef.current = liveNavBearing;
+  if (!navigating) navBearingRef.current = null;
+  const navBearing = navigating ? navBearingRef.current : null;
+
+  /** Which way this rider's own marker points, in degrees from north. */
+  const selfHeading = navigating ? (navBearing ?? location.heading) : location.heading;
+
+  /** A north-referenced heading turned into a rotation on screen. */
+  const onScreen = useCallback(
+    (heading: number | null) => (heading == null ? null : wrapDegrees(heading - mapBearing)),
+    [mapBearing],
+  );
+
+  /** Looking ahead: the rider sits low on screen with the road above them. */
+  const navPadding = useMemo(
+    () => ({
+      top: Math.round(screenHeight * 0.42),
+      right: 0,
+      bottom: Math.round(screenHeight * 0.08),
+      left: 0,
+    }),
+    [screenHeight],
+  );
 
   // Confirm the party exists and pick up its name and host.
   useEffect(() => {
@@ -230,8 +311,12 @@ function RideScreenInner({
       if (cancelled) return;
       if (result.status === "ok") {
         setParty(result.party);
+        // So a dropped connection or a stray back swipe is one tap from
+        // being undone on the home screen.
+        void rememberRide(code, result.party.hostName);
         return;
       }
+      if (result.status === "not_found") void forgetRide(code);
       setLookupError(
         result.status === "error"
           ? result.message
@@ -277,6 +362,7 @@ function RideScreenInner({
 
     void findParty(code).then((result) => {
       if (cancelled || result.status !== "not_found") return;
+      void forgetRide(code);
       stopNavigation();
       setSosActive(false);
       setEnded(true);
@@ -313,17 +399,32 @@ function RideScreenInner({
     [riders, nav.stops],
   );
 
+  /** Moves the camera onto this rider, in the driving or the parked view. */
+  const mapBearingRef = useRef(mapBearing);
+  mapBearingRef.current = mapBearing;
+  const follow = useCallback(
+    (duration: number, easing: "linear" | "ease") => {
+      if (!displayPosition) return;
+      // The current bearing is only a fallback while no direction is known.
+      const bearing = navigating ? (navBearing ?? mapBearingRef.current) : 0;
+      setMapBearing(bearing);
+      cameraRef.current?.easeTo({
+        center: displayPosition,
+        zoom: navigating ? NAV_ZOOM : FOLLOW_ZOOM,
+        pitch: navigating ? NAV_PITCH : 0,
+        bearing,
+        padding: navigating ? navPadding : NO_PADDING,
+        duration,
+        easing,
+      });
+    },
+    [displayPosition, navigating, navBearing, navPadding],
+  );
+
   const recenter = useCallback(() => {
-    if (!displayPosition) return;
     setFollowMode("follow");
-    cameraRef.current?.easeTo({
-      center: displayPosition,
-      zoom: navigating ? NAV_ZOOM : FOLLOW_ZOOM,
-      pitch: navigating ? NAV_PITCH : 0,
-      bearing: navigating ? (location.heading ?? 0) : 0,
-      duration: 600,
-    });
-  }, [displayPosition, navigating, location.heading]);
+    follow(600, "ease");
+  }, [follow]);
 
   const showEveryone = useCallback(() => {
     if (fitEveryone(700)) setFollowMode("overview");
@@ -334,6 +435,7 @@ function RideScreenInner({
     cameraRef.current?.flyTo({
       center: [target.lng, target.lat],
       zoom: FOLLOW_ZOOM,
+      padding: NO_PADDING,
       duration: 700,
     });
   }, []);
@@ -347,16 +449,11 @@ function RideScreenInner({
    * and flat, which is easier for comparing where the group is.
    */
   useEffect(() => {
-    if (followMode !== "follow" || !displayPosition) return;
-
-    cameraRef.current?.easeTo({
-      center: displayPosition,
-      zoom: navigating ? NAV_ZOOM : FOLLOW_ZOOM,
-      pitch: navigating ? NAV_PITCH : 0,
-      bearing: navigating ? (location.heading ?? 0) : 0,
-      duration: navigating ? 700 : 1000,
-    });
-  }, [followMode, displayPosition, navigating, location.heading]);
+    if (followMode !== "follow") return;
+    // Linear and exactly as long as the marker's glide, so the two arrive
+    // together instead of the marker hopping ahead of the map.
+    follow(GLIDE_MS, "linear");
+  }, [followMode, follow]);
 
   useEffect(() => {
     if (followMode !== "overview") return;
@@ -399,6 +496,11 @@ function RideScreenInner({
    * the next turn.
    */
   const onRegionChange = (event: NativeSyntheticEvent<ViewStateChangeEvent>) => {
+    // Whatever turned the map — a two-finger twist, or fitting a route —
+    // markers have to turn with it.
+    const turned = event.nativeEvent.bearing;
+    if (Math.abs(angleDelta(mapBearing, turned)) > 1) setMapBearing(turned);
+
     if (!event.nativeEvent.userInteraction) return;
 
     setFollowMode("free");
@@ -442,13 +544,19 @@ function RideScreenInner({
   };
 
   const cycleStyle = () => {
-    const index = mapStyleOrder.indexOf(styleName);
-    setStyleName(mapStyleOrder[(index + 1) % mapStyleOrder.length]);
+    setTheme(theme === "day" ? "night" : "day");
   };
 
   const leave = () => {
     if (!isHost) {
-      router.replace("/");
+      Alert.alert(
+        "Leave this ride?",
+        "The group carries on without you. While the ride is still going you can get back in from the home screen with one tap.",
+        [
+          { text: "Stay", style: "cancel" },
+          { text: "Leave", style: "destructive", onPress: () => router.replace("/") },
+        ],
+      );
       return;
     }
 
@@ -465,7 +573,10 @@ function RideScreenInner({
             // Awaited before leaving: navigating away closes the channel, and
             // the announcement has to be out of the door first.
             const closed = await endParty(code);
-            if (closed) await announceEnd().catch(() => undefined);
+            if (closed) {
+              await announceEnd().catch(() => undefined);
+              void forgetRide(code);
+            }
             router.replace("/");
             if (!closed) {
               Alert.alert(
@@ -478,6 +589,19 @@ function RideScreenInner({
       ],
     );
   };
+
+  // Android's back gesture used to drop the rider out of the ride without a
+  // word — easy to do by accident with gloves on. It now asks first.
+  const leaveRef = useRef(leave);
+  leaveRef.current = leave;
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (searchOpen || chatOpen) return false; // their own modals close first
+      leaveRef.current();
+      return true;
+    });
+    return () => sub.remove();
+  }, [searchOpen, chatOpen]);
 
   // Raising or clearing an SOS must reach the party now, not on the next GPS
   // tick, so the state is pushed the moment it changes.
@@ -560,13 +684,10 @@ function RideScreenInner({
   // Hidden while a route is being built or chosen: the rider is mid-decision,
   // and the panel below already has their full attention.
   const suggestion =
-    groupTrip &&
-    !onGroupTrip &&
-    groupTrip.key !== dismissedTrip &&
-    nav.status !== "routing" &&
-    !choosing
-      ? groupTrip
-      : null;
+    groupTrip && !onGroupTrip && nav.status !== "routing" && !choosing ? groupTrip : null;
+
+  /** Put off with "Later": shown as a slim bar rather than the full card. */
+  const suggestionCollapsed = Boolean(suggestion && suggestion.key === laterTrip);
 
   const suggestionChanged = Boolean(
     suggestion && followedLeader === suggestion.leader.id && nav.stops.length > 0,
@@ -577,7 +698,7 @@ function RideScreenInner({
   const suggestionKey = suggestion?.key ?? null;
   const voiceOn = nav.voiceEnabled;
   useEffect(() => {
-    if (!suggestion) return;
+    if (!suggestion || suggestionCollapsed) return;
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     if (navigating && voiceOn && !alertId) {
       const place = suggestion.stops[suggestion.stops.length - 1].label;
@@ -597,6 +718,15 @@ function RideScreenInner({
     // A fresh plan from where this rider is, through the leader's stops: same
     // place, this rider's own road there.
     nav.plan(groupTrip.stops);
+  };
+
+  /** Rides to wherever one particular rider is going, picked from the list. */
+  const joinTripOf = (other: RiderState) => {
+    const stops = sanitizeTrip(other.trip);
+    if (!other.navigating || !stops) return;
+    setFollowedLeader(other.id);
+    setSheetExpanded(false);
+    nav.plan(stops);
   };
 
   // --- chat -----------------------------------------------------------------
@@ -660,7 +790,6 @@ function RideScreenInner({
     [riders, rider?.id],
   );
 
-  const selfInRoster = riders.some((r) => r.id === rider?.id);
 
   if (lookupError || ended) {
     return (
@@ -715,7 +844,7 @@ function RideScreenInner({
     <View style={styles.root}>
       <Map
         style={StyleSheet.absoluteFill}
-        mapStyle={mapStyles[styleName]}
+        mapStyle={mapStyleFor[theme]}
         onRegionDidChange={onRegionChange}
         onLongPress={onLongPress}
         logo={false}
@@ -749,21 +878,16 @@ function RideScreenInner({
                   <Layer
                     id={`cruzo-route-alt-casing-${i}`}
                     type="line"
+                    beforeId={OVERLAY_BEFORE_LAYER}
                     layout={{ "line-cap": "round", "line-join": "round" }}
-                    paint={{
-                      "line-color": "#FFFFFF",
-                      "line-width": 11,
-                      "line-opacity": 0.9,
-                    }}
+                    paint={{ "line-color": route.altCasing, "line-width": 10 }}
                   />
                   <Layer
                     id={`cruzo-route-alt-line-${i}`}
                     type="line"
+                    beforeId={OVERLAY_BEFORE_LAYER}
                     layout={{ "line-cap": "round", "line-join": "round" }}
-                    paint={{
-                      "line-color": "#8B96A5",
-                      "line-width": 6,
-                    }}
+                    paint={{ "line-color": route.alt, "line-width": 7 }}
                   />
                 </GeoJSONSource>
               ),
@@ -784,11 +908,12 @@ function RideScreenInner({
                 <Layer
                   id="cruzo-route-travelled-line"
                   type="line"
+                  beforeId={OVERLAY_BEFORE_LAYER}
                   layout={{ "line-cap": "round", "line-join": "round" }}
                   paint={{
-                    "line-color": "#7A8797",
-                    "line-width": 7,
-                    "line-opacity": 0.5,
+                    "line-color": route.travelled,
+                    "line-width": 8,
+                    "line-opacity": 0.7,
                   }}
                 />
               </GeoJSONSource>
@@ -803,22 +928,28 @@ function RideScreenInner({
                   geometry: { type: "LineString", coordinates: routeLines.ahead },
                 }}
               >
-                {/* Dark casing first, so the bright line reads on any basemap. */}
+                {/* A darker blue border under a bright blue line, as Google
+                    draws it: it reads on white streets and yellow highways
+                    alike, and widens with zoom so it is never a hairline. */}
                 <Layer
                   id="cruzo-route-casing"
                   type="line"
+                  beforeId={OVERLAY_BEFORE_LAYER}
                   layout={{ "line-cap": "round", "line-join": "round" }}
                   paint={{
-                    "line-color": "#0B0E13",
-                    "line-width": 13,
-                    "line-opacity": 0.85,
+                    "line-color": route.casing,
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 10, 7, 15, 12, 18, 20],
                   }}
                 />
                 <Layer
                   id="cruzo-route-line"
                   type="line"
+                  beforeId={OVERLAY_BEFORE_LAYER}
                   layout={{ "line-cap": "round", "line-join": "round" }}
-                  paint={{ "line-color": "#FF5C1A", "line-width": 7 }}
+                  paint={{
+                    "line-color": route.line,
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4.5, 15, 8, 18, 14],
+                  }}
                 />
               </GeoJSONSource>
             ) : null}
@@ -833,7 +964,9 @@ function RideScreenInner({
             <Marker key={`stop-${i}-${s.label}`} lngLat={s.lngLat} anchor="bottom">
               <View style={styles.destPin} pointerEvents="none">
                 <View style={[styles.destPinHead, !last && styles.destPinHeadVia]}>
-                  <Text style={styles.destPinGlyph}>{last ? "◉" : String(i + 1)}</Text>
+                  <Text style={[styles.destPinGlyph, !last && styles.destPinGlyphVia]}>
+                    {last ? "●" : String(i + 1)}
+                  </Text>
                 </View>
                 <View style={styles.destPinStem} />
               </View>
@@ -872,44 +1005,42 @@ function RideScreenInner({
           </Marker>
         ) : null}
 
-        {/* Own marker, drawn from the snapped position and the live compass. */}
-        {!selfInRoster && displayPosition ? (
-          <Marker lngLat={displayPosition} anchor="center">
+        {/* Everyone else first, so your own marker is drawn on top. */}
+        {riders.map((entry) =>
+          entry.id === rider?.id ? null : (
+            <GlidingMarker key={entry.id} at={[entry.lng, entry.lat]} glideMs={OTHERS_GLIDE_MS}>
+              <RiderMarker
+                initials={initialsOf(entry.name)}
+                name={entry.name || "Rider"}
+                color={colorForRider(entry.id)}
+                rotation={onScreen(entry.heading)}
+                isSelf={false}
+                isHost={entry.isHost}
+                isStale={now - entry.updatedAt > STALE_AFTER_MS}
+                isSos={entry.sos}
+                isNavigating={entry.navigating}
+              />
+            </GlidingMarker>
+          ),
+        )}
+
+        {/* Own marker, from the snapped position and this phone's own sensors
+            rather than the copy that went round the party. */}
+        {displayPosition ? (
+          <GlidingMarker key="self" at={displayPosition} glideMs={GLIDE_MS}>
             <RiderMarker
               initials={initialsOf(rider?.name || "Me")}
               name="You"
               color={colorForRider(rider?.id ?? "me")}
-              heading={location.heading}
+              rotation={onScreen(selfHeading)}
               isSelf
               isHost={isHost}
               isStale={false}
               isSos={sosActive}
               isNavigating={navigating}
             />
-          </Marker>
+          </GlidingMarker>
         ) : null}
-
-        {riders.map((entry) => {
-          const isSelf = entry.id === rider?.id;
-          const at: [number, number] =
-            isSelf && displayPosition ? displayPosition : [entry.lng, entry.lat];
-
-          return (
-            <Marker key={entry.id} lngLat={at} anchor="center">
-              <RiderMarker
-                initials={initialsOf(entry.name)}
-                name={entry.name || "Rider"}
-                color={colorForRider(entry.id)}
-                heading={isSelf ? location.heading : entry.heading}
-                isSelf={isSelf}
-                isHost={entry.isHost}
-                isStale={now - entry.updatedAt > STALE_AFTER_MS}
-                isSos={entry.sos}
-                isNavigating={entry.navigating}
-              />
-            </Marker>
-          );
-        })}
       </Map>
 
       <View style={[styles.header, { paddingTop: insets.top + space.sm }]}>
@@ -994,10 +1125,9 @@ function RideScreenInner({
           palette={c}
         />
         <ControlButton
-          label={mapStyleLabels[styleName]}
-          small
+          label={theme === "day" ? "☀" : "☾"}
           onPress={cycleStyle}
-          accessibilityLabel={`Map style ${mapStyleLabels[styleName]}. Tap to change.`}
+          accessibilityLabel={`${theme === "day" ? "Day" : "Night"} map. Tap to switch.`}
           palette={c}
         />
         {/* Out of a call this joins one; in a call it is the quick mute, which
@@ -1158,8 +1288,9 @@ function RideScreenInner({
             }
             switching={navigating}
             changed={suggestionChanged}
+            collapsed={suggestionCollapsed}
             onAccept={acceptGroupTrip}
-            onDismiss={() => setDismissedTrip(suggestion.key)}
+            onDismiss={() => setLaterTrip(suggestion.key)}
           />
         ) : null}
 
@@ -1207,6 +1338,10 @@ function RideScreenInner({
           expanded={sheetExpanded}
           onToggle={() => setSheetExpanded((value) => !value)}
           onFocusRider={focusRider}
+          onJoinTrip={joinTripOf}
+          selfDestination={
+            nav.stops.length > 0 ? nav.stops[nav.stops.length - 1].lngLat : null
+          }
           now={now}
         />
       </View>
@@ -1228,6 +1363,30 @@ function RideScreenInner({
         onClose={() => setChatOpen(false)}
       />
     </View>
+  );
+}
+
+/**
+ * A marker that slides to each new position instead of hopping.
+ *
+ * Its own component so the per-frame glide re-renders only this marker, not
+ * the whole ride screen.
+ */
+function GlidingMarker({
+  at,
+  glideMs,
+  children,
+}: {
+  at: LngLat;
+  glideMs: number;
+  children: ReactElement;
+}) {
+  const shown = useGlide(at, glideMs);
+  if (!shown) return null;
+  return (
+    <Marker lngLat={shown} anchor="center">
+      {children}
+    </Marker>
   );
 }
 
@@ -1432,14 +1591,14 @@ const makeStyles = (c: Palette) =>
       width: 34,
       height: 34,
       borderRadius: 17,
-      backgroundColor: "#FF5C1A",
+      backgroundColor: "#EA4335",
       borderWidth: 3,
       borderColor: "#FFFFFF",
       alignItems: "center",
       justifyContent: "center",
       elevation: 6,
     },
-    destPinHeadVia: { backgroundColor: "#FFFFFF", borderColor: "#FF5C1A" },
+    destPinHeadVia: { backgroundColor: "#FFFFFF", borderColor: "#1A73E8" },
     groupPinHead: { backgroundColor: "#FFFFFF" },
     groupPinGlyph: { fontSize: 16, fontWeight: "900" },
     groupPinLabel: {
@@ -1454,7 +1613,8 @@ const makeStyles = (c: Palette) =>
       overflow: "hidden",
       marginBottom: 3,
     },
-    destPinGlyph: { color: "#1A0A02", fontSize: 15, fontWeight: "900" },
+    destPinGlyph: { color: "#FFFFFF", fontSize: 15, fontWeight: "900" },
+    destPinGlyphVia: { color: "#1A73E8" },
     destPinStem: {
       width: 3,
       height: 12,

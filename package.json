@@ -41,7 +41,7 @@
     "prebuild": "expo prebuild --platform android --clean",
     "doctor": "npx expo-doctor",
     "typecheck": "tsc --noEmit",
-    "test": "tsc --ignoreConfig src/lib/geo.ts src/lib/rideCode.ts src/lib/polyline.ts src/lib/navigation.ts src/lib/groupTrip.ts src/lib/chat.ts src/lib/voice.ts --outDir .test-build --module commonjs --target es2020 --skipLibCheck && node scripts/logic-tests.js && node scripts/nav-tests.js",
+    "test": "tsc --ignoreConfig src/lib/geo.ts src/lib/rideCode.ts src/lib/polyline.ts src/lib/navigation.ts src/lib/groupTrip.ts src/lib/chat.ts src/lib/voice.ts src/lib/motion.ts --outDir .test-build --module commonjs --target es2020 --skipLibCheck && node scripts/logic-tests.js && node scripts/nav-tests.js",
     "check:routing": "tsc --ignoreConfig src/lib/polyline.ts src/lib/navigation.ts --outDir .test-build --module commonjs --target es2020 --skipLibCheck && node scripts/reroute-check.js",
     "icons": "node scripts/make-icons.js",
     "check:realtime": "node scripts/check-realtime.js"
