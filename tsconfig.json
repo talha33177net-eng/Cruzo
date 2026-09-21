@@ -2,5 +2,7 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true
-  }
+  },
+  // Supabase Edge Functions run on Deno, not in the app, and have their own types.
+  "exclude": ["node_modules", "supabase/functions"]
 }
