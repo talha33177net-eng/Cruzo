@@ -70,7 +70,8 @@
       ],
       "./plugins/withReleaseSigning",
       "expo-splash-screen",
-      "@config-plugins/react-native-webrtc"
+      "@config-plugins/react-native-webrtc",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true

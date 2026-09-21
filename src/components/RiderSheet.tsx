@@ -1,6 +1,14 @@
 import type { LngLat } from "@maplibre/maplibre-react-native";
-import { useMemo } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  Animated,
+  PanResponder,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 
 import { STALE_AFTER_MS } from "../lib/config";
 import {
@@ -23,7 +31,7 @@ type Props = {
   selfPosition: LngLat | null;
   colorFor: (id: string) => string;
   expanded: boolean;
-  onToggle: () => void;
+  onExpandedChange: (expanded: boolean) => void;
   onFocusRider: (rider: RiderState) => void;
   /**
    * Plans this rider's own route to where `rider` is heading.
@@ -41,9 +49,13 @@ type Props = {
 /**
  * Bottom panel listing everyone in the party.
  *
- * Collapsed it is a single tappable strip showing the head count, so it never
- * covers much of the map; expanded it lists each rider with their distance and
+ * Collapsed it is a single strip showing the head count, so it never covers
+ * much of the map; pulled up it lists each rider with their distance and
  * bearing relative to the viewer.
+ *
+ * It is a swipe-up sheet, as in Google Maps: the list follows the finger while
+ * the handle is dragged, and on release settles open or shut by where it was
+ * let go and how fast it was flicked. A tap still toggles it.
  */
 export function RiderSheet({
   riders,
@@ -51,7 +63,7 @@ export function RiderSheet({
   selfPosition,
   colorFor,
   expanded,
-  onToggle,
+  onExpandedChange,
   onFocusRider,
   onJoinTrip,
   selfDestination,
@@ -69,10 +81,73 @@ export function RiderSheet({
     return a.name.localeCompare(b.name);
   });
 
+  // Open height: every row if they fit, else a scrolling list.
+  const listHeight = Math.min(LIST_MAX, sorted.length * ROW_H + FOOT_H);
+
+  /** 0 = shut, 1 = open. Follows the finger while dragging. */
+  const openness = useRef(new Animated.Value(expanded ? 1 : 0)).current;
+  const dragStart = useRef(0);
+
+  const settle = useCallback(
+    (open: boolean) => {
+      Animated.spring(openness, {
+        toValue: open ? 1 : 0,
+        useNativeDriver: false, // animates height, which the native driver cannot
+        speed: 18,
+        bounciness: 2,
+      }).start();
+      if (open !== expanded) onExpandedChange(open);
+    },
+    [openness, expanded, onExpandedChange],
+  );
+
+  // Opened or closed from outside (say, after joining someone's trip).
+  useEffect(() => {
+    Animated.spring(openness, {
+      toValue: expanded ? 1 : 0,
+      useNativeDriver: false,
+      speed: 18,
+      bounciness: 2,
+    }).start();
+  }, [expanded, openness]);
+
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        // Capture, so the drag is taken from the Pressable inside once the
+        // finger moves; only a mostly-vertical drag counts, so a plain tap
+        // still reaches the Pressable.
+        onMoveShouldSetPanResponderCapture: (_, g) =>
+          Math.abs(g.dy) > 6 && Math.abs(g.dy) > Math.abs(g.dx),
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
+          openness.stopAnimation((value) => {
+            dragStart.current = value;
+          });
+        },
+        onPanResponderMove: (_, g) => {
+          const next = dragStart.current - g.dy / listHeight;
+          openness.setValue(Math.max(0, Math.min(1, next)));
+        },
+        onPanResponderRelease: (_, g) => {
+          const reached = dragStart.current - g.dy / listHeight;
+          // A flick wins over position; otherwise whichever half it is in.
+          const open =
+            g.vy < -FLICK ? true : g.vy > FLICK ? false : reached > 0.5;
+          settle(open);
+        },
+        onPanResponderTerminate: () => settle(expanded),
+      }),
+    [openness, listHeight, settle, expanded],
+  );
+
   return (
     <View style={styles.sheet}>
+      {/* The drag lives on a wrapper: Pressable installs its own touch
+          handlers, which would override any spread onto it. */}
+      <View {...pan.panHandlers}>
       <Pressable
-        onPress={onToggle}
+        onPress={() => settle(!expanded)}
         accessibilityRole="button"
         accessibilityLabel={
           expanded ? "Hide rider list" : `Show rider list, ${riders.length} riding`
@@ -104,9 +179,23 @@ export function RiderSheet({
           <Text style={styles.chevron}>{expanded ? "⌄" : "⌃"}</Text>
         </View>
       </Pressable>
+      </View>
 
-      {expanded ? (
-        <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
+      <Animated.View
+        style={[
+          styles.listClip,
+          {
+            height: openness.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, listHeight],
+            }),
+          },
+        ]}
+      >
+        <ScrollView
+          style={{ height: listHeight }}
+          showsVerticalScrollIndicator={false}
+        >
           {sorted.map((rider) => {
             const isSelf = rider.id === selfId;
             const color = colorFor(rider.id);
@@ -152,7 +241,6 @@ export function RiderSheet({
                   <Text style={styles.rowMeta} numberOfLines={1}>
                     {[
                       destinationOf(rider) ? `→ ${destinationOf(rider)!.label}` : null,
-                      rider.bike || null,
                       away,
                       stale ? formatAgo(rider.updatedAt, now) : null,
                     ]
@@ -189,12 +277,20 @@ export function RiderSheet({
           })}
           <View style={styles.listFoot} />
         </ScrollView>
-      ) : null}
+      </Animated.View>
     </View>
   );
 }
 
 const SOS_RED = "#D32029";
+
+/** Tallest the open list gets before it scrolls. */
+const LIST_MAX = 300;
+/** One rider row: avatar, padding and divider. */
+const ROW_H = 63;
+const FOOT_H = 12;
+/** Release speed (px/ms) that counts as a flick. */
+const FLICK = 0.4;
 
 const makeStyles = (c: Palette) =>
   StyleSheet.create({
@@ -233,7 +329,7 @@ const makeStyles = (c: Palette) =>
     avatarMore: { borderColor: c.border },
     avatarMoreText: { fontSize: 10, fontWeight: "800", color: c.textDim },
     chevron: { color: c.textDim, fontSize: 18, fontWeight: "800" },
-    list: { maxHeight: 280 },
+    listClip: { overflow: "hidden" },
     row: {
       flexDirection: "row",
       alignItems: "center",

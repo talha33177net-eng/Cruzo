@@ -33,7 +33,6 @@ type Palette = {
   waterLabel: string;
   building: string;
   buildingOutline: string;
-  building3d: string;
 
   motorway: string;
   motorwayCasing: string;
@@ -81,7 +80,6 @@ const DAY: Palette = {
   waterLabel: "#3F7EB5",
   building: "#E6E8EC",
   buildingOutline: "#D7DAE0",
-  building3d: "#ECEDF0",
 
   motorway: "#FCD378",
   motorwayCasing: "#E0A93E",
@@ -129,7 +127,6 @@ const NIGHT: Palette = {
   waterLabel: "#56708F",
   building: "#27303E",
   buildingOutline: "#323C4D",
-  building3d: "#2A3341",
 
   motorway: "#8A7552",
   motorwayCasing: "#2A2A28",
@@ -431,7 +428,9 @@ function build(p: Palette): StyleSpecification {
       },
     },
 
-    // --- flat buildings (fade out as the 3D ones take over) -----------------
+    // --- buildings: flat, never extruded ------------------------------------
+    // 3D blocks were tried and hid the street in the tilted driving view; on
+    // a bike the road is what matters, so buildings stay a quiet footprint.
     {
       id: "building",
       type: "fill",
@@ -441,7 +440,7 @@ function build(p: Palette): StyleSpecification {
       paint: {
         "fill-color": p.building,
         "fill-outline-color": p.buildingOutline,
-        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 14, 0, 14.5, 1, 16.3, 1, 16.8, 0],
+        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 14, 0, 14.5, 1],
       },
     },
 
@@ -548,23 +547,6 @@ function build(p: Palette): StyleSpecification {
         "line-width": ["match", ["get", "admin_level"], 2, 1.2, 0.8],
         "line-dasharray": [3, 2],
         "line-opacity": 0.7,
-      },
-    },
-
-    // --- 3D buildings, seen when the driving view tilts -----------------------
-    {
-      id: "building-3d",
-      type: "fill-extrusion",
-      source: SOURCE,
-      "source-layer": "building",
-      minzoom: 16,
-      paint: {
-        "fill-extrusion-color": p.building3d,
-        "fill-extrusion-height": ["coalesce", ["get", "render_height"], 6],
-        "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
-        // Light and see-through: in the tilted driving view the street is
-        // what matters, and solid blocks hid it.
-        "fill-extrusion-opacity": ["interpolate", ["linear"], ["zoom"], 16, 0, 16.8, 0.55],
       },
     },
 

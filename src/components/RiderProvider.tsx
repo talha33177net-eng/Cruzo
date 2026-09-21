@@ -13,7 +13,7 @@ import { loadIdentity, type RiderIdentity, saveRiderProfile } from "../lib/ident
 type RiderContextValue = {
   rider: RiderIdentity | null;
   ready: boolean;
-  updateProfile: (name: string, bike: string) => Promise<void>;
+  updateProfile: (name: string) => Promise<void>;
 };
 
 const RiderContext = createContext<RiderContextValue | null>(null);
@@ -37,11 +37,9 @@ export function RiderProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const updateProfile = useCallback(async (name: string, bike: string) => {
-    await saveRiderProfile(name, bike);
-    setRider((current) =>
-      current ? { ...current, name: name.trim(), bike: bike.trim() } : current,
-    );
+  const updateProfile = useCallback(async (name: string) => {
+    await saveRiderProfile(name);
+    setRider((current) => (current ? { ...current, name: name.trim() } : current));
   }, []);
 
   const value = useMemo(

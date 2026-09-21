@@ -22,13 +22,11 @@ import { colors, radius, space } from "../src/theme";
 export default function HomeScreen() {
   const { rider, ready, updateProfile } = useRider();
   const [name, setName] = useState("");
-  const [bike, setBike] = useState("");
 
   // Seed the inputs once the stored profile arrives.
   useEffect(() => {
     if (!rider) return;
     setName(rider.name);
-    setBike(rider.bike);
   }, [rider]);
 
   const [activeRides, setActiveRides] = useState<RecentRide[]>([]);
@@ -74,12 +72,12 @@ export default function HomeScreen() {
   const canContinue = ready && trimmedName.length > 0 && isBackendConfigured;
 
   const go = async (path: "/host" | "/join") => {
-    await updateProfile(trimmedName, bike);
+    await updateProfile(trimmedName);
     router.push(path);
   };
 
   const rejoin = async (code: string) => {
-    await updateProfile(trimmedName, bike);
+    await updateProfile(trimmedName);
     router.push(`/ride/${code}`);
   };
 
@@ -148,16 +146,8 @@ export default function HomeScreen() {
             placeholder="e.g. Rafi"
             autoCapitalize="words"
             maxLength={24}
-            returnKeyType="next"
-          />
-          <Field
-            label="Your bike"
-            value={bike}
-            onChangeText={setBike}
-            placeholder="Optional — e.g. R15 V4"
-            autoCapitalize="words"
-            maxLength={24}
-            hint="Shown to other riders in the party list."
+            returnKeyType="done"
+            hint="Shown to the other riders in your party."
           />
         </View>
 

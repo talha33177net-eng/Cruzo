@@ -2,12 +2,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const ID_KEY = "cruzo.rider.id";
 const NAME_KEY = "cruzo.rider.name";
-const BIKE_KEY = "cruzo.rider.bike";
+/** Where older builds kept a bike name; cleared on the next save. */
+const LEGACY_BIKE_KEY = "cruzo.rider.bike";
 
 export type RiderIdentity = {
   id: string;
   name: string;
-  bike: string;
 };
 
 /**
@@ -22,8 +22,7 @@ function createRiderId(): string {
 }
 
 export async function loadIdentity(): Promise<RiderIdentity> {
-  const [[, storedId], [, storedName], [, storedBike]] =
-    await AsyncStorage.multiGet([ID_KEY, NAME_KEY, BIKE_KEY]);
+  const [[, storedId], [, storedName]] = await AsyncStorage.multiGet([ID_KEY, NAME_KEY]);
 
   let id = storedId;
   if (!id) {
@@ -34,15 +33,12 @@ export async function loadIdentity(): Promise<RiderIdentity> {
   return {
     id,
     name: storedName ?? "",
-    bike: storedBike ?? "",
   };
 }
 
-export async function saveRiderProfile(name: string, bike: string): Promise<void> {
-  await AsyncStorage.multiSet([
-    [NAME_KEY, name.trim()],
-    [BIKE_KEY, bike.trim()],
-  ]);
+export async function saveRiderProfile(name: string): Promise<void> {
+  await AsyncStorage.setItem(NAME_KEY, name.trim());
+  await AsyncStorage.removeItem(LEGACY_BIKE_KEY);
 }
 
 /** Two-character badge drawn inside a rider's map marker. */

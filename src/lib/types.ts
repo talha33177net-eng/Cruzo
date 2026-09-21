@@ -16,7 +16,6 @@ export type Fix = {
 export type RiderState = {
   id: string;
   name: string;
-  bike: string;
   isHost: boolean;
   lng: number;
   lat: number;

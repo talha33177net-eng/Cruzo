@@ -1,5 +1,4 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
-import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import { useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -28,7 +27,6 @@ export default function ScanScreen() {
     }
 
     handled.current = true;
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     router.replace({ pathname: "/join", params: { code } });
   };
 

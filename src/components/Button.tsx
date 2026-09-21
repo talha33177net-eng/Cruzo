@@ -1,4 +1,3 @@
-import * as Haptics from "expo-haptics";
 import type { ReactNode } from "react";
 import {
   ActivityIndicator,
@@ -35,7 +34,6 @@ export function Button({
 
   const handlePress = () => {
     if (inactive) return;
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onPress();
   };
 

@@ -15,7 +15,6 @@ import type { ConnectionStatus, Destination, Fix, RiderState } from "../lib/type
 type Profile = {
   id: string;
   name: string;
-  bike: string;
   isHost: boolean;
   sos: boolean;
   navigating: boolean;
@@ -115,11 +114,10 @@ export function useRideChannel(
   profileRef.current = profile;
 
   const payloadFor = useCallback((fix: Fix): RiderState => {
-    const { id, name, bike, isHost, sos, navigating, trip } = profileRef.current;
+    const { id, name, isHost, sos, navigating, trip } = profileRef.current;
     return {
       id,
       name,
-      bike,
       isHost,
       sos,
       navigating,

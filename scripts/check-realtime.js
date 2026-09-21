@@ -118,7 +118,6 @@ function joinChat(client) {
 const ALICE = {
   id: "probe-alice",
   name: "Alice",
-  bike: "R15",
   isHost: true,
   sos: false,
   lng: 90.3954,
@@ -132,7 +131,6 @@ const ALICE = {
 const BOB = {
   id: "probe-bob",
   name: "Bob",
-  bike: "Duke 390",
   isHost: false,
   sos: false,
   lng: 90.4152,
@@ -166,7 +164,6 @@ async function main() {
 
   if (bobViaAlice) {
     check("Bob's name arrived intact", bobViaAlice.name, "Bob");
-    check("Bob's bike arrived intact", bobViaAlice.bike, "Duke 390");
     check("Bob's longitude is exact", bobViaAlice.lng, BOB.lng);
     check("Bob's latitude is exact", bobViaAlice.lat, BOB.lat);
     check("Bob's heading survived", bobViaAlice.heading, BOB.heading);

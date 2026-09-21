@@ -39,8 +39,8 @@ type Props = {
  * so the one beam on screen is always yours.
  *
  * Names sit underneath in upright text, because a label that turns with the
- * heading is unreadable half the time. Your own marker has none: it is the
- * one in the middle of the screen.
+ * heading is unreadable half the time. Your own carries your name too, in a
+ * chip filled with your colour, so you can pick yourself out of a cluster.
  */
 function RiderMarkerBase({
   initials,
@@ -99,16 +99,26 @@ function RiderMarkerBase({
       </View>
 
       {/* Inside the frame, so the marker's centre stays the rider's spot. */}
-      {!isSelf ? (
-        <View style={[styles.chipRow, riding && styles.chipRowRiding]}>
-          <View style={[styles.chip, isStale && !isSos && styles.stale]}>
-            <View style={[styles.chipDot, { backgroundColor: color }]} />
-            <Text style={styles.chipText} numberOfLines={1}>
-              {isHost ? `${name} ★` : name}
-            </Text>
-          </View>
+      <View
+        style={[
+          styles.chipRow,
+          riding && styles.chipRowRiding,
+          riding && isSelf && styles.chipRowSelfRiding,
+        ]}
+      >
+        <View
+          style={[
+            styles.chip,
+            isSelf && { backgroundColor: color },
+            isStale && !isSos && styles.stale,
+          ]}
+        >
+          {!isSelf ? <View style={[styles.chipDot, { backgroundColor: color }]} /> : null}
+          <Text style={styles.chipText} numberOfLines={1}>
+            {isHost ? `${name} ★` : name}
+          </Text>
         </View>
-      ) : null}
+      </View>
     </View>
   );
 }
@@ -325,6 +335,8 @@ const styles = StyleSheet.create({
   },
   /** The arrow reaches a little lower than the disc. */
   chipRowRiding: { top: C + 24 },
+  /** Your arrow is bigger and sits in a halo; the label clears both. */
+  chipRowSelfRiding: { top: C + 31 },
   chip: {
     flexDirection: "row",
     alignItems: "center",
